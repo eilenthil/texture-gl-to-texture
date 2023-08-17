@@ -80,6 +80,8 @@ bool image_info::init() {
       png_read_image(png_ptr, temp_buff);
 
       delete[] temp_buff;
+      png_destroy_info_struct(png_ptr, &info_ptr);
+      //     png_destroy__struct(&png_ptr, nullptr);
     }
   }
 
@@ -226,15 +228,26 @@ public:
   void terminate();
 
   void bind();
-  void draw();
+  void draw(GLuint location, glm::vec3, int, program &);
 
   bool init_texture(char const *payload, unsigned int w, unsigned int h);
 
+  bool init_fbo();
+
+  void terminate_fbo();
+
+  void terminate_texture();
+
 private:
-  GLuint _vertex_buffer_object;
-  GLuint _index_buffer_object;
-  GLuint _vertex_attrib_object;
+  GLuint _vertex_buffer_object[2];
+  GLuint _index_buffer_object[2];
+  GLuint _vertex_attrib_object[2];
   GLuint _texture;
+  GLuint _fbo;
+  GLuint _fbo_texture;
+  GLuint _rbo;
+  std::vector<vertex> _vertex_data_two;
+  std::vector<unsigned short> _index_data_two;
 
   std::vector<vertex> _vertex_data;
   std::vector<unsigned short> _index_data;
@@ -242,11 +255,36 @@ private:
   bool init_vertex_data();
   bool init_buffer_objects();
   bool init_attribs();
-
-  void terminate_texture();
   void terminate_buffer_objects();
   void terminate_attribs();
 };
+
+bool drawable::init_fbo() {
+  glGenFramebuffers(1, &_fbo);
+  glBindFramebuffer(GL_FRAMEBUFFER, _fbo);
+  glGenTextures(1, &_fbo_texture);
+  glBindTexture(GL_TEXTURE_2D, _fbo_texture);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 800, 600, 0, GL_RGB, GL_UNSIGNED_BYTE,
+               0);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                         _fbo_texture, 0);
+  glGenRenderbuffers(1, &_rbo);
+  glBindRenderbuffer(GL_RENDERBUFFER, _rbo);
+  glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 800, 600);
+  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                            GL_RENDERBUFFER, _rbo);
+  if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    std::cout << "Framebuffer Badge\n";
+  }
+  return true;
+}
+
+void drawable::terminate_fbo() {
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glDeleteFramebuffers(1, &_fbo);
+}
 
 bool drawable::init_texture(char const *payload, unsigned int w,
                             unsigned int h) {
@@ -273,8 +311,6 @@ void drawable::terminate_texture() {
 bool drawable::init() {
   init_vertex_data();
   init_buffer_objects();
-  glBindBuffer(GL_ARRAY_BUFFER, _vertex_buffer_object);
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _index_buffer_object);
   init_attribs();
   return true;
 }
@@ -285,12 +321,39 @@ void drawable::terminate() {
 }
 
 void drawable::bind() {
-  glBindVertexArray(_vertex_attrib_object);
-  glBindBuffer(GL_ARRAY_BUFFER, _vertex_buffer_object);
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _index_buffer_object);
+  glBindVertexArray(_vertex_attrib_object[0]);
+  glBindBuffer(GL_ARRAY_BUFFER, _vertex_buffer_object[0]);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _index_buffer_object[0]);
 }
 
-void drawable::draw() {
+void drawable::draw(GLuint mat_location, glm::vec3 cam_location, int time,
+                    program &gpu_program) {
+
+  glBindVertexArray(_vertex_attrib_object[0]);
+  glBindBuffer(GL_ARRAY_BUFFER, _vertex_buffer_object[0]);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _index_buffer_object[0]);
+  glBindTexture(GL_TEXTURE_2D, _texture);
+  glBindFramebuffer(GL_FRAMEBUFFER, _fbo);
+
+  glViewport(0, 0, 800, 600);
+  cam_location.x = 2.f + 2. * glm::sin(glm::radians(time * .32f));
+  cam_location.y = 1.f + 2. * glm::cos(glm::radians(time * .32f));
+  glm::mat4 view = glm::lookAt(cam_location, glm::vec3(0.f, 0.f, 0.f),
+                               glm::vec3(0.f, 1.f, 0.f));
+  glm::mat4 projection =
+      glm::perspective(glm::radians(45.f), 1.33f, .1f, 100.f);
+  glm::mat4 ident = glm::mat4(1.f);
+  gpu_program.set_uniform(projection * view, mat_location);
+  glDrawElements(GL_TRIANGLES, _index_data_two.size(), GL_UNSIGNED_SHORT, 0);
+
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glBindVertexArray(_vertex_attrib_object[1]);
+  glBindBuffer(GL_ARRAY_BUFFER, _vertex_buffer_object[1]);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _index_buffer_object[1]);
+
+  glViewport(0, 0, 800, 600);
+  glBindTexture(GL_TEXTURE_2D, _fbo_texture);
+  gpu_program.set_uniform(ident, mat_location);
   glDrawElements(GL_TRIANGLES, _index_data.size(), GL_UNSIGNED_SHORT, 0);
 }
 
@@ -351,69 +414,101 @@ bool drawable::init_vertex_data() {
   vertex v;
   v.position = {.0, .0, .5};
   v.color = {0., 0., 0.};
-  _vertex_data.push_back(v);
+  _vertex_data_two.push_back(v);
   v.position = {0., 1., .5};
   v.color = {0., 1., .0};
-  _vertex_data.push_back(v);
+  _vertex_data_two.push_back(v);
   v.position = {1., 0., .5};
   v.color = {1., .0, .0};
-  _vertex_data.push_back(v);
+  _vertex_data_two.push_back(v);
   v.position = {1., 1., .5};
   v.color = {1., 1., .0};
-  _vertex_data.push_back(v);
+  _vertex_data_two.push_back(v);
 
   v.position = {.0, .0, -.5};
   v.color = {1., 1., 0.};
-  _vertex_data.push_back(v);
+  _vertex_data_two.push_back(v);
   v.position = {0., 1., -.5};
   v.color = {1., 0., .0};
-  _vertex_data.push_back(v);
+  _vertex_data_two.push_back(v);
   v.position = {1., 0., -.5};
   v.color = {0., 1.0, .0};
-  _vertex_data.push_back(v);
+  _vertex_data_two.push_back(v);
   v.position = {1., 1., -.5};
   v.color = {0., 0., .0};
-  _vertex_data.push_back(v);
+  _vertex_data_two.push_back(v);
 
-  _index_data = {0, 1, 2, 1, 3, 2, 4, 5, 6, 6, 7, 5,
-                 1, 3, 5, 3, 7, 5, 0, 2, 4, 2, 4, 6, // some comment
-                 0, 1, 4, 1, 4, 5, 2, 3, 6, 3, 6, 7};
+  _index_data_two = {0, 1, 2, 1, 3, 2, 4, 5, 6, 6, 7, 5,
+                     1, 3, 5, 3, 7, 5, 0, 2, 4, 2, 4, 6, // some comment
+                     0, 1, 4, 1, 4, 5, 2, 3, 6, 3, 6, 7};
+
+  v.position = {-1., -1., 0.};
+  v.color = {0., 0., 0.};
+  _vertex_data.push_back(v);
+  v.position = {-1., 0., 0.};
+  v.color = {0., 1., 0.};
+
+  _vertex_data.push_back(v);
+  v.position = {.0, -1., 0.};
+  v.color = {1., 0., 0.};
+
+  _vertex_data.push_back(v);
+  v.position = {1., 1., 0.};
+  v.color = {1., 1., 0.};
+
+  _vertex_data.push_back(v);
+  _index_data = {0, 1, 2, 1, 2, 3};
   return true;
 }
 bool drawable::init_buffer_objects() {
-  glGenBuffers(1, &_vertex_buffer_object);
-  glBindBuffer(GL_ARRAY_BUFFER, _vertex_buffer_object);
+  glGenBuffers(2, _vertex_buffer_object);
+  glBindBuffer(GL_ARRAY_BUFFER, _vertex_buffer_object[0]);
+  glBufferData(GL_ARRAY_BUFFER, _vertex_data_two.size() * sizeof(vertex),
+               _vertex_data_two.data(), GL_STATIC_DRAW);
+
+  glBindBuffer(GL_ARRAY_BUFFER, _vertex_buffer_object[1]);
   glBufferData(GL_ARRAY_BUFFER, _vertex_data.size() * sizeof(vertex),
                _vertex_data.data(), GL_STATIC_DRAW);
-  glGenBuffers(1, &_index_buffer_object);
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _index_buffer_object);
+  glGenBuffers(2, _index_buffer_object);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _index_buffer_object[0]);
+  glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+               _index_data_two.size() * sizeof(unsigned short),
+               _index_data_two.data(), GL_STATIC_DRAW);
+
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _index_buffer_object[1]);
   glBufferData(GL_ELEMENT_ARRAY_BUFFER,
                _index_data.size() * sizeof(unsigned short), _index_data.data(),
                GL_STATIC_DRAW);
+
   return true;
 }
 
 void drawable::terminate_buffer_objects() {
   glBindBuffer(GL_ARRAY_BUFFER, 0);
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-  glDeleteBuffers(1, &_vertex_buffer_object);
-  glDeleteBuffers(1, &_index_buffer_object);
+  glDeleteBuffers(2, _vertex_buffer_object);
+  glDeleteBuffers(2, _index_buffer_object);
 }
 
 bool drawable::init_attribs() {
-  glGenVertexArrays(1, &_vertex_attrib_object);
-  glBindVertexArray(_vertex_attrib_object);
-  glEnableVertexAttribArray(0);
-  glEnableVertexAttribArray(1);
-  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(vertex), (void *)0);
-  glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(vertex),
-                        (void *)(3 * sizeof(float)));
+  glGenVertexArrays(2, _vertex_attrib_object);
+  for (int i = 0; i < 2; ++i) {
+    glBindVertexArray(_vertex_attrib_object[i]);
+    glBindBuffer(GL_ARRAY_BUFFER, _vertex_buffer_object[i]);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _index_buffer_object[i]);
+
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(vertex), (void *)0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(vertex),
+                          (void *)(3 * sizeof(float)));
+  }
   return true;
 }
 
 void drawable::terminate_attribs() {
   glBindVertexArray(0);
-  glDeleteVertexArrays(1, &_vertex_attrib_object);
+  glDeleteVertexArrays(2, _vertex_attrib_object);
 }
 
 int main() {
@@ -433,8 +528,6 @@ int main() {
     program gpu_program(VERTEX_SHADER, FRAGMENT_SHADER);
     drawable data;
     glm::vec3 cam_location = glm::vec3(4., 3., 3.f);
-    glm::mat4 projection =
-        glm::perspective(glm::radians(45.f), 1.33f, .1f, 100.f);
     glm::mat4 view = glm::lookAt(cam_location, glm::vec3(0.f, 0.f, 0.f),
                                  glm::vec3(0.f, 1.f, 0.f));
     GLuint mat_location = -3;
@@ -453,23 +546,23 @@ int main() {
       size_t iter = 0;
       glEnable(GL_DEPTH_TEST);
       data.init_texture(ii.data(), ii.width(), ii.height());
+
+      data.init_fbo();
       while (!glfwWindowShouldClose(window)) {
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
           glfwSetWindowShouldClose(window, true);
         }
-        cam_location.x = 2.f + 2. * glm::sin(glm::radians(iter * .32f));
-        cam_location.y = 1.f + 2. * glm::cos(glm::radians(iter * .32f));
-        view = glm::lookAt(cam_location, glm::vec3(0.f, 0.f, 0.f),
-                           glm::vec3(0.f, 1.f, 0.f));
-        gpu_program.set_uniform(projection * view, mat_location);
+
         glClearColor(.1, .1, .1, 1.);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        data.draw();
+        data.draw(mat_location, cam_location, iter, gpu_program);
         glfwSwapBuffers(window);
         glfwPollEvents();
         ++iter;
       }
 
+      data.terminate_fbo();
+      data.terminate_texture();
       data.terminate();
       gpu_program.terminate();
       glfwDestroyWindow(window);
