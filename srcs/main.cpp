@@ -1,9 +1,91 @@
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include <fstream>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
+#include <png.h>
+#include <pngconf.h>
+#include <string.h>
 #include <vector>
+static bool read_file(std::string const &path,
+                      std::vector<unsigned char> &payload) {
+  std::fstream fs_file;
+  fs_file.open(path, std::ios::ate | std::ios::in | std::ios::binary);
+  if (fs_file.is_open()) {
+    size_t size = fs_file.tellg();
+    fs_file.seekg(0, std::ios::beg);
+    payload.resize(size);
+    fs_file.read((char *)payload.data(), size);
+    fs_file.close();
+    return true;
+  }
+  return false;
+}
+
+struct image_info {
+public:
+  image_info(std::string const &path);
+
+  bool init();
+  void terminate();
+  int width() const { return _width; }
+  int height() const { return _height; }
+  char const *data() const { return (char const *)_image_payload.data(); }
+
+private:
+  std::string _path;
+  std::vector<unsigned char> _image_payload;
+  int _width;
+  int _height;
+  int _bpp;
+  int _channel_count;
+};
+
+image_info::image_info(std::string const &path) : _path(path) {}
+
+bool image_info::init() {
+  bool r = true; // read_file(_path, payload);
+  if (r) {
+    if (true) {
+      png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING,
+                                                   nullptr, nullptr, nullptr);
+      png_infop info_ptr = png_create_info_struct(png_ptr);
+      if (setjmp(png_jmpbuf(png_ptr))) {
+        std::cout << "err\n";
+      }
+      FILE *png_file = fopen(_path.c_str(), "rb");
+      png_init_io(png_ptr, png_file);
+      png_read_info(png_ptr, info_ptr);
+      std::cout << "PNG [" << png_get_image_width(png_ptr, info_ptr) << "x"
+                << png_get_image_height(png_ptr, info_ptr) << "]\n";
+
+      _height = png_get_image_height(png_ptr, info_ptr);
+      _width = png_get_image_width(png_ptr, info_ptr);
+      png_uint_32 p_width, p_height;
+      int p_color_type;
+      auto bbp = png_get_IHDR(png_ptr, info_ptr, &p_width, &p_height, &_bpp,
+                              &p_color_type, nullptr, nullptr, nullptr);
+      _channel_count = (int)png_get_channels(png_ptr, info_ptr);
+
+      std::cout << "Png [" << p_width << "x" << p_height << "] " << _bpp
+                << " bits , bands " << _channel_count << "\n";
+      unsigned char **temp_buff = new unsigned char *[_height];
+      _image_payload.resize(_height * _width * _channel_count);
+      size_t offset = 0;
+      for (auto y = 0; y < _height; ++y) {
+        temp_buff[y] = _image_payload.data() + offset;
+        offset += _channel_count * _width;
+      }
+      png_read_image(png_ptr, temp_buff);
+
+      delete[] temp_buff;
+    }
+  }
+
+  return false;
+}
+void image_info::terminate() {}
 
 static constexpr auto VERTEX_SHADER =
     "#version 330\n"
@@ -18,10 +100,13 @@ static constexpr auto VERTEX_SHADER =
 
 static constexpr auto FRAGMENT_SHADER =
     "#version 330\n"
+    "uniform sampler2D intexture;\n"
     "out vec4 fragColor;\n"
     "in vec3 o_color;\n"
     "void main() {\n"
-    "	fragColor = vec4(o_color , 1.0f);\n"
+    " vec4 tex_color = texture(intexture, vec2(o_color.x, o_color.y));"
+    " vec3 merged  = .5 * tex_color.rgb + .5 * o_color;\n"
+    "	fragColor = tex_color;\n"
     "};";
 
 class program {
@@ -86,8 +171,8 @@ bool program::init() {
           msg.resize(msg_len);
 
           glGetProgramInfoLog(_program, msg.size(), &msg_len, msg.data());
-          std::cout
-              << "============== Program link failed =======================\n";
+          std::cout << "============== Program link failed "
+                       "=======================\n";
           for (auto const &c : msg)
             std::cout << c;
           std::cout << "\n============== Program link failed "
@@ -118,12 +203,12 @@ bool program::compile_shader(char const *code, GLuint &shader, GLuint type) {
       std::vector<char> msg;
       msg.resize(msg_len);
       glGetShaderInfoLog(shader, msg.size(), &msg_len, msg.data());
-      std::cout
-          << "============== Shader compile failed =======================\n";
+      std::cout << "============== Shader compile failed "
+                   "=======================\n";
       for (auto const &c : msg)
         std::cout << c;
-      std::cout
-          << "\n============== Shader compile failed =======================\n";
+      std::cout << "\n============== Shader compile failed "
+                   "=======================\n";
     }
     return false;
   }
@@ -143,10 +228,13 @@ public:
   void bind();
   void draw();
 
+  bool init_texture(char const *payload, unsigned int w, unsigned int h);
+
 private:
   GLuint _vertex_buffer_object;
   GLuint _index_buffer_object;
   GLuint _vertex_attrib_object;
+  GLuint _texture;
 
   std::vector<vertex> _vertex_data;
   std::vector<unsigned short> _index_data;
@@ -155,9 +243,33 @@ private:
   bool init_buffer_objects();
   bool init_attribs();
 
+  void terminate_texture();
   void terminate_buffer_objects();
   void terminate_attribs();
 };
+
+bool drawable::init_texture(char const *payload, unsigned int w,
+                            unsigned int h) {
+  glGenTextures(1, &_texture);
+  glBindTexture(GL_TEXTURE_2D, _texture);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                  GL_LINEAR_MIPMAP_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE,
+               payload);
+  glGenerateMipmap(GL_TEXTURE_2D);
+  glEnable(GL_TEXTURE_2D);
+  return true;
+}
+
+void drawable::terminate_texture() {
+  glBindTexture(GL_TEXTURE_2D, 0);
+  glDeleteTextures(1, &_texture);
+}
+
 bool drawable::init() {
   init_vertex_data();
   init_buffer_objects();
@@ -182,6 +294,25 @@ void drawable::draw() {
   glDrawElements(GL_TRIANGLES, _index_data.size(), GL_UNSIGNED_SHORT, 0);
 }
 
+/*bool drawable::init_vertex_data() {
+  vertex v;
+  v.position = {.5, .5, .0};
+  v.color = {1., 0., 0.};
+  _vertex_data.push_back(v);
+  v.position = {.5, -.5, .0};
+  v.color = {1., 1., .0};
+  _vertex_data.push_back(v);
+  v.position = {-.5, -.5, .0};
+  v.color = {.0, 1.0, .0};
+
+  _vertex_data.push_back(v);
+  v.position = {-.5, .5, .0};
+  v.color = {.0, 0.0, .0};
+  _vertex_data.push_back(v);
+
+  _index_data = {0, 1, 2, 0, 2, 3};
+  return true;
+}
 bool drawable::init_vertex_data() {
   vertex v;
   v.position = {-.5, -.5, .5};
@@ -214,8 +345,41 @@ bool drawable::init_vertex_data() {
                  3, 7, 1, 5, 7, 0, 2, 3, 0, 1, 2, 0, 1, 3, 4, 6, 7, 4, 5};
 
   return true;
-}
+}*/
 
+bool drawable::init_vertex_data() {
+  vertex v;
+  v.position = {.0, .0, .5};
+  v.color = {0., 0., 0.};
+  _vertex_data.push_back(v);
+  v.position = {0., 1., .5};
+  v.color = {0., 1., .0};
+  _vertex_data.push_back(v);
+  v.position = {1., 0., .5};
+  v.color = {1., .0, .0};
+  _vertex_data.push_back(v);
+  v.position = {1., 1., .5};
+  v.color = {1., 1., .0};
+  _vertex_data.push_back(v);
+
+  v.position = {.0, .0, -.5};
+  v.color = {1., 1., 0.};
+  _vertex_data.push_back(v);
+  v.position = {0., 1., -.5};
+  v.color = {1., 0., .0};
+  _vertex_data.push_back(v);
+  v.position = {1., 0., -.5};
+  v.color = {0., 1.0, .0};
+  _vertex_data.push_back(v);
+  v.position = {1., 1., -.5};
+  v.color = {0., 0., .0};
+  _vertex_data.push_back(v);
+
+  _index_data = {0, 1, 2, 1, 3, 2, 4, 5, 6, 6, 7, 5,
+                 1, 3, 5, 3, 7, 5, 0, 2, 4, 2, 4, 6, // some comment
+                 0, 1, 4, 1, 4, 5, 2, 3, 6, 3, 6, 7};
+  return true;
+}
 bool drawable::init_buffer_objects() {
   glGenBuffers(1, &_vertex_buffer_object);
   glBindBuffer(GL_ARRAY_BUFFER, _vertex_buffer_object);
@@ -274,6 +438,11 @@ int main() {
     glm::mat4 view = glm::lookAt(cam_location, glm::vec3(0.f, 0.f, 0.f),
                                  glm::vec3(0.f, 1.f, 0.f));
     GLuint mat_location = -3;
+
+    image_info ii("../res/peepo_rip.png");
+    if (ii.init()) {
+    }
+
     if (window && gpu_program.init()) {
       data.init();
       gpu_program.use();
@@ -283,12 +452,13 @@ int main() {
 
       size_t iter = 0;
       glEnable(GL_DEPTH_TEST);
+      data.init_texture(ii.data(), ii.width(), ii.height());
       while (!glfwWindowShouldClose(window)) {
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
           glfwSetWindowShouldClose(window, true);
         }
-        cam_location.x = 4.f + 2. * glm::sin(glm::radians(iter * .32f));
-        cam_location.y = 3.f + 2. * glm::cos(glm::radians(iter * .32f));
+        cam_location.x = 2.f + 2. * glm::sin(glm::radians(iter * .32f));
+        cam_location.y = 1.f + 2. * glm::cos(glm::radians(iter * .32f));
         view = glm::lookAt(cam_location, glm::vec3(0.f, 0.f, 0.f),
                            glm::vec3(0.f, 1.f, 0.f));
         gpu_program.set_uniform(projection * view, mat_location);
